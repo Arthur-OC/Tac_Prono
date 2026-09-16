@@ -4,7 +4,6 @@ from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 import pandas as pd
 
-# Configuration de la page (Barre latérale fermée par défaut)
 st.set_page_config(
     page_title="Lâche ton Prono", 
     page_icon="🤾", 
@@ -12,7 +11,6 @@ st.set_page_config(
     initial_sidebar_state="collapsed"
 )
 
-# Connexion à Supabase
 @st.cache_resource
 def get_supabase() -> Client:
     return create_client(st.secrets["SUPABASE_URL"], st.secrets["SUPABASE_KEY"])
@@ -22,7 +20,6 @@ tz_fr = ZoneInfo("Europe/Paris")
 
 st.title("🤾 Lâche ton Prono 🍻")
 
-# 1. Trouver le prochain match pour l'affichage public
 res_match = supabase.table("matchs").select("*").eq("statut", "A venir").order("id").limit(1).execute()
 
 if not res_match.data:
@@ -34,7 +31,6 @@ match_id_public, code, adversaire = match["id"], match["code_match"], match["adv
 
 st.subheader(f"Prochain match : {code} vs {adversaire}")
 
-# 2. Gestion de la limite de temps (J-3 à 12h00)
 if match.get("date_match"):
     date_str = match["date_match"].replace("Z", "+00:00")
     date_match = datetime.fromisoformat(date_str).astimezone(tz_fr)
@@ -47,13 +43,11 @@ else:
     st.write("⏳ **Clôture des pronos :** Date non fixée")
     verrouille = False
 
-# 3. Charger l'effectif depuis la base de données
 res_joueurs = supabase.table("joueurs").select("nom").order("nom").execute()
 liste_joueurs = [j["nom"] for j in res_joueurs.data]
 
 st.divider()
 
-# --- ESPACE ADMINISTRATEUR (CACHÉ DANS LA BARRE LATÉRALE) ---
 with st.sidebar:
     with st.expander("⚙️ Administration du jeu"):
         mdp = st.text_input("Mot de passe secret :", type="password")
@@ -68,7 +62,6 @@ with st.sidebar:
             id_match_admin = choix_matchs[nom_match_admin]
             
             st.write("Renseigne les 12 joueurs alignés pour CE match :")
-            # Plus de max_selections ici non plus
             compo_officielle = st.multiselect("La composition officielle :", options=liste_joueurs)
             
             if st.button("Valider le match et calculer les points", type="primary"):
@@ -86,6 +79,9 @@ with st.sidebar:
                         bons_choix = set(prono["joueurs_choisis"]).intersection(set(compo_officielle))
                         points_obtenus = len(bons_choix)
                         
+                        if points_obtenus == 12:
+                            points_obtenus += 3
+                        
                         supabase.table("pronostics").update({
                             "points": points_obtenus
                         }).eq("id", prono["id"]).execute()
@@ -98,14 +94,12 @@ with st.sidebar:
 # --- CRÉATION DES 3 ONGLETS PRINCIPAUX ---
 tab_prono, tab_recap, tab_classement = st.tabs(["📝 Mon prono", "👀 L'équipe", "🏆 Classement"])
 
-# --- ONGLET 1 : DÉPOSER / MODIFIER SON PRONO ---
 with tab_prono:
     if verrouille:
         st.error("⛔ Les pronostics pour ce match sont désormais clôturés.")
     else:
         with st.form("prono_form"):
             nom_pote = st.selectbox("Qui es-tu ?", options=["-- Sélectionne ton nom --"] + liste_joueurs)
-            # Suppression de la limite max_selections=12 pour éviter le bandeau de blocage
             selection = st.multiselect("Sélectionne tes 12 joueurs :", options=liste_joueurs)
             
             submit = st.form_submit_button("Valider mon prono 🚀", type="primary")
@@ -133,7 +127,6 @@ with tab_prono:
                         st.success("✅ Ton prono a été enregistré !")
                     st.balloons()
 
-# --- ONGLET 2 : VOIR LES VOTES ---
 with tab_recap:
     st.write("### Pronos validés pour ce match")
     res_pronos = supabase.table("pronostics").select("nom_pote, joueurs_choisis").eq("match_id", match_id_public).execute()
@@ -145,7 +138,6 @@ with tab_recap:
     else:
         st.info("Aucun prono déposé pour le moment.")
 
-# --- ONGLET 3 : CLASSEMENT (GÉNÉRAL ET PAR JOURNÉE) ---
 with tab_classement:
     matchs_termines = supabase.table("matchs").select("id, code_match, adversaire").eq("statut", "TERMINE").order("id").execute().data
     
@@ -158,10 +150,22 @@ with tab_classement:
         all_pronos = supabase.table("pronostics").select("nom_pote, points").execute()
         if all_pronos.data:
             df_class = pd.DataFrame(all_pronos.data)
-            df_class = df_class.groupby("nom_pote")["points"].sum().reset_index()
-            df_class = df_class.sort_values(by="points", ascending=False).reset_index(drop=True)
+            
+            df_class["Couronnes 👑"] = df_class["points"].apply(lambda x: 1 if x == 15 else 0)
+            
+            df_class = df_class.groupby("nom_pote").agg(
+                Points=("points", "sum"),
+                Couronnes=("Couronnes 👑", "sum")
+            ).reset_index()
+            
+            df_class = df_class.sort_values(by=["Points", "Couronnes"], ascending=[False, False]).reset_index(drop=True)
             df_class.index += 1
-            st.dataframe(df_class.rename(columns={"nom_pote": "Joueur", "points": "Points"}), use_container_width=True)
+            
+            df_class_display = df_class.rename(columns={
+                "nom_pote": "Joueur", 
+                "Couronnes": "Couronnes 👑"
+            })
+            st.dataframe(df_class_display, use_container_width=True)
         else:
             st.info("Aucun point n'a encore été distribué.")
             
@@ -177,16 +181,26 @@ with tab_classement:
             df_j.index += 1
             
             min_pts = df_j["points"].min()
-            df_j["Mention"] = df_j["points"].apply(lambda x: "🍻 Paye ton Pack !" if x == min_pts else "")
             
+            def attribuer_mention(pts):
+                if pts == 15:
+                    return "👑 Sans-faute !"
+                elif pts == min_pts:
+                    return "🍻 Paye ton Pack !"
+                else:
+                    return ""
+
+            df_j["Mention"] = df_j["points"].apply(attribuer_mention)
             df_j_display = df_j.rename(columns={"nom_pote": "Joueur", "points": "Points"})
             
-            def highlight_loser(row):
-                if row["Mention"] == "🍻 Paye ton Pack !":
-                    return ['background-color: #FFD700; color: #000000; font-weight: bold'] * len(row)
+            def highlight_rows(row):
+                if row["Mention"] == "👑 Sans-faute !":
+                    return ['background-color: #90EE90; color: #000000; font-weight: bold'] * len(row) # Vert clair
+                elif row["Mention"] == "🍻 Paye ton Pack !":
+                    return ['background-color: #FFD700; color: #000000; font-weight: bold'] * len(row) # Jaune
                 return [''] * len(row)
                 
-            styled_df = df_j_display.style.apply(highlight_loser, axis=1)
+            styled_df = df_j_display.style.apply(highlight_rows, axis=1)
             st.dataframe(styled_df, use_container_width=True)
         else:
             st.info("Aucun prono enregistré pour ce match.")
