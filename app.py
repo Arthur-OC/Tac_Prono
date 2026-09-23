@@ -35,7 +35,8 @@ if match.get("date_match"):
     date_str = match["date_match"].replace("Z", "+00:00")
     date_match = datetime.fromisoformat(date_str).astimezone(tz_fr)
     
-    date_limite = (date_match - timedelta(days=3)).replace(hour=12, minute=0, second=0, microsecond=0)
+    # MODIFICATION 1 : Clôture à 20h au lieu de 12h
+    date_limite = (date_match - timedelta(days=3)).replace(hour=20, minute=0, second=0, microsecond=0)
     
     st.write(f"⏳ **Clôture des pronos :** {date_limite.strftime('%d/%m/%Y à %H:%M')}")
     verrouille = datetime.now(tz_fr) > date_limite
@@ -139,7 +140,8 @@ with tab_recap:
         st.info("Aucun prono déposé pour le moment.")
 
 with tab_classement:
-    matchs_termines = supabase.table("matchs").select("id, code_match, adversaire").eq("statut", "TERMINE").order("id").execute().data
+    # MODIFICATION 2 : On récupère aussi la compo_officielle de la base de données
+    matchs_termines = supabase.table("matchs").select("id, code_match, adversaire, compo_officielle").eq("statut", "TERMINE").order("id").execute().data
     
     options_affichage = ["Classement Général"] + [f"{m['code_match']} vs {m['adversaire']}" for m in matchs_termines]
     choix_vue = st.selectbox("Affichage :", options_affichage)
@@ -172,11 +174,23 @@ with tab_classement:
     else:
         match_selectionne = next(m for m in matchs_termines if f"{m['code_match']} vs {m['adversaire']}" == choix_vue)
         id_m = match_selectionne['id']
+        compo_off = match_selectionne.get('compo_officielle', [])
         
-        pronos_journee = supabase.table("pronostics").select("nom_pote, points").eq("match_id", id_m).execute()
+        # Affichage de la composition officielle
+        if compo_off:
+            st.success(f"✅ **Composition Officielle :** {', '.join(compo_off)}")
+        else:
+            st.warning("⚠️ La composition officielle n'a pas été trouvée pour ce match.")
+        
+        # MODIFICATION 2 : On récupère la colonne "joueurs_choisis" en plus
+        pronos_journee = supabase.table("pronostics").select("nom_pote, points, joueurs_choisis").eq("match_id", id_m).execute()
         
         if pronos_journee.data:
             df_j = pd.DataFrame(pronos_journee.data)
+            
+            # Formatage de la liste des joueurs choisis en texte lisible
+            df_j["Son Prono"] = df_j["joueurs_choisis"].apply(lambda x: ", ".join(x) if isinstance(x, list) else "")
+            
             df_j = df_j.sort_values(by="points", ascending=False).reset_index(drop=True)
             df_j.index += 1
             
@@ -191,7 +205,9 @@ with tab_classement:
                     return ""
 
             df_j["Mention"] = df_j["points"].apply(attribuer_mention)
-            df_j_display = df_j.rename(columns={"nom_pote": "Joueur", "points": "Points"})
+            
+            # On sélectionne les colonnes à afficher, en incluant "Son Prono"
+            df_j_display = df_j[["nom_pote", "points", "Son Prono", "Mention"]].rename(columns={"nom_pote": "Joueur", "points": "Points"})
             
             def highlight_rows(row):
                 if row["Mention"] == "👑 Sans-faute !":
