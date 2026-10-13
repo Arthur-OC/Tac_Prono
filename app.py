@@ -20,7 +20,7 @@ tz_fr = ZoneInfo("Europe/Paris")
 
 st.title("🤾 Lâche ton Prono 🍻")
 
-res_match = supabase.table("matchs").select("*").eq("statut", "A venir").order("id").limit(1).execute()
+res_match = supabase.table("matchs").select("*").eq("statut", "A venir").order("date_match").limit(1).execute()
 
 if not res_match.data:
     st.info("Aucun match à venir programmé.")
@@ -56,7 +56,7 @@ with st.sidebar:
         if mdp == st.secrets.get("ADMIN_PASSWORD", ""):
             st.success("🔓 Mode Administrateur activé")
             
-            tous_les_matchs = supabase.table("matchs").select("id, code_match, adversaire, statut").order("id").execute().data
+            tous_les_matchs = supabase.table("matchs").select("id, code_match, adversaire, statut").order("date_match").execute().data
             choix_matchs = {f"{m['code_match']} vs {m['adversaire']} ({m['statut']})": m['id'] for m in tous_les_matchs}
             
             nom_match_admin = st.selectbox("Sélectionne le match à traiter :", options=list(choix_matchs.keys()))
@@ -141,7 +141,7 @@ with tab_recap:
 
 with tab_classement:
     # MODIFICATION 2 : On récupère aussi la compo_officielle de la base de données
-    matchs_termines = supabase.table("matchs").select("id, code_match, adversaire, compo_officielle").eq("statut", "TERMINE").order("id").execute().data
+    matchs_termines = supabase.table("matchs").select("id, code_match, adversaire, compo_officielle").eq("statut", "TERMINE").order("date_match").execute().data
     
     options_affichage = ["Classement Général"] + [f"{m['code_match']} vs {m['adversaire']}" for m in matchs_termines]
     choix_vue = st.selectbox("Affichage :", options_affichage)
