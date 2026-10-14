@@ -20,6 +20,7 @@ tz_fr = ZoneInfo("Europe/Paris")
 
 st.title("🤾 Lâche ton Prono 🍻")
 
+# On trie maintenant par "date_match" pour que l'ID n'ait plus d'importance
 res_match = supabase.table("matchs").select("*").eq("statut", "A venir").order("date_match").limit(1).execute()
 
 if not res_match.data:
@@ -29,13 +30,16 @@ if not res_match.data:
 match = res_match.data[0]
 match_id_public, code, adversaire = match["id"], match["code_match"], match["adversaire"]
 
+# --- NOUVEAU : On définit la limite selon le type de match ---
+nb_joueurs_public = 14 if str(code).startswith("CDF") else 12
+
 st.subheader(f"Prochain match : {code} vs {adversaire}")
 
 if match.get("date_match"):
     date_str = match["date_match"].replace("Z", "+00:00")
     date_match = datetime.fromisoformat(date_str).astimezone(tz_fr)
     
-    # MODIFICATION 1 : Clôture à 20h au lieu de 12h
+    # Clôture à 20h
     date_limite = (date_match - timedelta(days=3)).replace(hour=20, minute=0, second=0, microsecond=0)
     
     st.write(f"⏳ **Clôture des pronos :** {date_limite.strftime('%d/%m/%Y à %H:%M')}")
@@ -56,18 +60,23 @@ with st.sidebar:
         if mdp == st.secrets.get("ADMIN_PASSWORD", ""):
             st.success("🔓 Mode Administrateur activé")
             
+            # Tri par date_match ici aussi
             tous_les_matchs = supabase.table("matchs").select("id, code_match, adversaire, statut").order("date_match").execute().data
             choix_matchs = {f"{m['code_match']} vs {m['adversaire']} ({m['statut']})": m['id'] for m in tous_les_matchs}
             
             nom_match_admin = st.selectbox("Sélectionne le match à traiter :", options=list(choix_matchs.keys()))
             id_match_admin = choix_matchs[nom_match_admin]
             
-            st.write("Renseigne les 12 joueurs alignés pour CE match :")
+            # --- NOUVEAU : On vérifie si le match sélectionné par l'admin est une CDF ---
+            match_admin = next(m for m in tous_les_matchs if m['id'] == id_match_admin)
+            nb_joueurs_admin = 14 if str(match_admin['code_match']).startswith("CDF") else 12
+            
+            st.write(f"Renseigne les **{nb_joueurs_admin} joueurs** alignés pour CE match :")
             compo_officielle = st.multiselect("La composition officielle :", options=liste_joueurs)
             
             if st.button("Valider le match et calculer les points", type="primary"):
-                if len(compo_officielle) != 12:
-                    st.warning(f"⚠️ Tu dois sélectionner exactement 12 joueurs (Tu en as coché {len(compo_officielle)}).")
+                if len(compo_officielle) != nb_joueurs_admin:
+                    st.warning(f"⚠️ Tu dois sélectionner exactement {nb_joueurs_admin} joueurs (Tu en as coché {len(compo_officielle)}).")
                 else:
                     supabase.table("matchs").update({
                         "compo_officielle": compo_officielle,
@@ -80,7 +89,8 @@ with st.sidebar:
                         bons_choix = set(prono["joueurs_choisis"]).intersection(set(compo_officielle))
                         points_obtenus = len(bons_choix)
                         
-                        if points_obtenus == 12:
+                        # --- MODIFIÉ : Le bonus s'applique si on a tout trouvé, que ce soit sur 12 ou 14 ---
+                        if points_obtenus == nb_joueurs_admin:
                             points_obtenus += 3
                         
                         supabase.table("pronostics").update({
@@ -101,15 +111,17 @@ with tab_prono:
     else:
         with st.form("prono_form"):
             nom_pote = st.selectbox("Qui es-tu ?", options=["-- Sélectionne ton nom --"] + liste_joueurs)
-            selection = st.multiselect("Sélectionne tes 12 joueurs :", options=liste_joueurs)
+            
+            # --- MODIFIÉ : Le texte s'adapte à 12 ou 14 joueurs ---
+            selection = st.multiselect(f"Sélectionne tes {nb_joueurs_public} joueurs :", options=liste_joueurs)
             
             submit = st.form_submit_button("Valider mon prono 🚀", type="primary")
             
             if submit:
                 if nom_pote == "-- Sélectionne ton nom --":
                     st.warning("⚠️ Tu dois sélectionner ton nom dans la liste.")
-                elif len(selection) != 12:
-                    st.warning(f"⚠️ Tu dois sélectionner exactement 12 joueurs (Tu en as coché {len(selection)}).")
+                elif len(selection) != nb_joueurs_public:
+                    st.warning(f"⚠️ Tu dois sélectionner exactement {nb_joueurs_public} joueurs (Tu en as coché {len(selection)}).")
                 else:
                     existant = supabase.table("pronostics").select("id").eq("match_id", match_id_public).eq("nom_pote", nom_pote).execute()
                     if existant.data:
@@ -140,7 +152,6 @@ with tab_recap:
         st.info("Aucun prono déposé pour le moment.")
 
 with tab_classement:
-    # MODIFICATION 2 : On récupère aussi la compo_officielle de la base de données
     matchs_termines = supabase.table("matchs").select("id, code_match, adversaire, compo_officielle").eq("statut", "TERMINE").order("date_match").execute().data
     
     options_affichage = ["Classement Général"] + [f"{m['code_match']} vs {m['adversaire']}" for m in matchs_termines]
@@ -153,7 +164,8 @@ with tab_classement:
         if all_pronos.data:
             df_class = pd.DataFrame(all_pronos.data)
             
-            df_class["Couronnes 👑"] = df_class["points"].apply(lambda x: 1 if x == 15 else 0)
+            # --- MODIFIÉ : 15 pts (sans-faute normal) OU 17 pts (sans-faute Coupe) donnent une couronne ---
+            df_class["Couronnes 👑"] = df_class["points"].apply(lambda x: 1 if x in [15, 17] else 0)
             
             df_class = df_class.groupby("nom_pote").agg(
                 Points=("points", "sum"),
@@ -176,19 +188,15 @@ with tab_classement:
         id_m = match_selectionne['id']
         compo_off = match_selectionne.get('compo_officielle', [])
         
-        # Affichage de la composition officielle
         if compo_off:
             st.success(f"✅ **Composition Officielle :** {', '.join(compo_off)}")
         else:
             st.warning("⚠️ La composition officielle n'a pas été trouvée pour ce match.")
         
-        # MODIFICATION 2 : On récupère la colonne "joueurs_choisis" en plus
         pronos_journee = supabase.table("pronostics").select("nom_pote, points, joueurs_choisis").eq("match_id", id_m).execute()
         
         if pronos_journee.data:
             df_j = pd.DataFrame(pronos_journee.data)
-            
-            # Formatage de la liste des joueurs choisis en texte lisible
             df_j["Son Prono"] = df_j["joueurs_choisis"].apply(lambda x: ", ".join(x) if isinstance(x, list) else "")
             
             df_j = df_j.sort_values(by="points", ascending=False).reset_index(drop=True)
@@ -197,7 +205,8 @@ with tab_classement:
             min_pts = df_j["points"].min()
             
             def attribuer_mention(pts):
-                if pts == 15:
+                # --- MODIFIÉ : 15 ou 17 points pour détecter le sans-faute ---
+                if pts in [15, 17]:
                     return "👑 Sans-faute !"
                 elif pts == min_pts:
                     return "🍻 Paye ton Pack !"
@@ -205,15 +214,13 @@ with tab_classement:
                     return ""
 
             df_j["Mention"] = df_j["points"].apply(attribuer_mention)
-            
-            # On sélectionne les colonnes à afficher, en incluant "Son Prono"
             df_j_display = df_j[["nom_pote", "points", "Son Prono", "Mention"]].rename(columns={"nom_pote": "Joueur", "points": "Points"})
             
             def highlight_rows(row):
                 if row["Mention"] == "👑 Sans-faute !":
-                    return ['background-color: #90EE90; color: #000000; font-weight: bold'] * len(row) # Vert clair
+                    return ['background-color: #90EE90; color: #000000; font-weight: bold'] * len(row)
                 elif row["Mention"] == "🍻 Paye ton Pack !":
-                    return ['background-color: #FFD700; color: #000000; font-weight: bold'] * len(row) # Jaune
+                    return ['background-color: #FFD700; color: #000000; font-weight: bold'] * len(row)
                 return [''] * len(row)
                 
             styled_df = df_j_display.style.apply(highlight_rows, axis=1)
